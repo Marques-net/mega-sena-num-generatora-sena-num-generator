@@ -1,0 +1,10 @@
+build/
+output/
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+*.csv
+result.txt
+
