@@ -112,6 +112,38 @@ Exemplo de execucao mais curta para teste:
 --capture-mode <mode>   outlet ou top-side
 ```
 
+## API HTTP
+
+O mesmo binario pode operar como servico HTTP para integracao com o GameHub:
+
+```bash
+./build/mega_sena_num_generator --serve --port 8080 --output-dir /tmp/mega-sena-runs
+```
+
+Endpoints:
+
+- `GET /health/live`
+- `GET /health/ready`
+- `POST /api/mega-sena-simulator/simulate`
+
+Exemplo:
+
+```bash
+curl -s http://127.0.0.1:8080/api/mega-sena-simulator/simulate \
+  -H 'Content-Type: application/json' \
+  -d '{"seed":42,"maxTime":30,"minMixTime":3,"captureMode":"outlet"}'
+```
+
+A resposta retorna a ordem de extracao, dezenas ordenadas, parametros efetivos
+e uma amostra da trajetoria para visualizacao no front.
+
+## Container
+
+```bash
+docker build -t mega-sena-num-generator .
+docker run --rm -p 8080:8080 mega-sena-num-generator
+```
+
 ## Criterios atendidos
 
 - C++17 com CMake.
@@ -131,4 +163,3 @@ Exemplo de execucao mais curta para teste:
 O binario executa uma simulacao por vez. Para milhares de rodadas, use seeds
 diferentes e direcione cada saida para um diretorio distinto. O CSV e amostrado
 por `--csv-interval`, separado do timestep interno, para reduzir volume de dados.
-
