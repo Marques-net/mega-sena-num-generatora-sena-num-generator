@@ -4,6 +4,7 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -57,12 +58,17 @@ void LotteryMachine::run() {
         initialize();
     }
 
-    const std::filesystem::path outputDir(config_.outputDir);
-    std::filesystem::create_directories(outputDir);
-    CsvWriter csv(outputDir / "trajectory.csv");
+    std::unique_ptr<CsvWriter> csv;
+    if (config_.writeArtifacts) {
+        const std::filesystem::path outputDir(config_.outputDir);
+        std::filesystem::create_directories(outputDir);
+        csv = std::make_unique<CsvWriter>(outputDir / "trajectory.csv");
+    }
 
     double nextCsvTime = 0.0;
-    csv.writeSnapshot(currentTime_, balls_);
+    if (csv) {
+        csv->writeSnapshot(currentTime_, balls_);
+    }
 
     while (currentTime_ < config_.maxDuration &&
            static_cast<int>(extracted_.size()) < config_.ballsToExtract) {
@@ -70,14 +76,18 @@ void LotteryMachine::run() {
         currentTime_ += config_.timeStep;
         tryCapture();
 
-        if (currentTime_ + 1e-12 >= nextCsvTime) {
-            csv.writeSnapshot(currentTime_, balls_);
+        if (csv && currentTime_ + 1e-12 >= nextCsvTime) {
+            csv->writeSnapshot(currentTime_, balls_);
             nextCsvTime += config_.csvInterval;
         }
     }
 
-    csv.writeSnapshot(currentTime_, balls_);
-    writeResultFile();
+    if (csv) {
+        csv->writeSnapshot(currentTime_, balls_);
+    }
+    if (config_.writeArtifacts) {
+        writeResultFile();
+    }
 }
 
 Vec3 LotteryMachine::randomInitialPosition(std::mt19937_64& rng) const {
@@ -196,4 +206,3 @@ void LotteryMachine::writeResultFile() const {
     out << std::setfill(' ') << '\n';
     out << "complete=" << (static_cast<int>(extracted_.size()) == config_.ballsToExtract ? "yes" : "no") << '\n';
 }
-

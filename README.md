@@ -144,6 +144,72 @@ docker build -t mega-sena-num-generator .
 docker run --rm -p 8080:8080 mega-sena-num-generator
 ```
 
+## Agente de calibracao historica
+
+O binario `mega_sena_calibration_agent` executa uma busca retrospectiva de
+parametros do DEM contra resultados historicos da Mega-Sena armazenados em
+MongoDB. Ele usa os componentes do simulador (`LotteryMachine`, `DEMSolver`,
+`SimulationConfig`) e varia, por tentativa:
+
+- seed `uint64`;
+- intensidade do jato de ar;
+- intensidade da turbulencia;
+- coeficiente de restituicao;
+- coeficiente de atrito;
+- tempo minimo de mistura;
+- raio e velocidade maxima da zona de captura;
+- modo de captura `outlet` ou `top-side`;
+- amortecimento normal e tangencial.
+
+Por padrao, o agente busca os 10 ultimos concursos em
+`geek_hub.mega_sena_resultados` e grava progresso/resultado em
+`geek_hub.mega_sena_simulacoes` com `documentType` igual a
+`dem_parameter_calibration`.
+
+Exemplo de execucao continua:
+
+```bash
+export MONGO_URI='mongodb://root:<senha>@127.0.0.1:27017/geek_hub?authSource=admin'
+
+mega_sena_calibration_agent \
+  --latest 10 \
+  --database geek_hub \
+  --history-collection mega_sena_resultados \
+  --calibration-collection mega_sena_simulacoes \
+  --output-dir calibration-output
+```
+
+O agente nao define limite de tentativas por padrao. Ele continua em cada
+concurso ate encontrar uma simulacao cujas 6 dezenas ordenadas sejam iguais ao
+resultado historico. Para validar sem entrar em busca longa:
+
+```bash
+mega_sena_calibration_agent \
+  --latest 10 \
+  --dry-run \
+  --max-attempts-per-contest 1 \
+  --max-time 0.2 \
+  --min-mix-time 0.05 \
+  --dt 0.002
+```
+
+Campos principais gravados no MongoDB:
+
+- `agentName`, `agentVersion` e `documentType`;
+- `status`: `running`, `attempt_limit` ou `matched`;
+- `concurso`, `dataSorteio`, `targetNumbers` e `targetOrder`;
+- `attempts` e `attemptsString`;
+- `parameters`, incluindo `seed`/`seedString` como string exata `uint64`;
+- `simulatorResult` com ordem extraida, dezenas ordenadas, completude e tempo
+  final;
+- `artifactOutputDir` para CSV/result.txt quando houver match;
+- `simulator.gitCommit`, `updatedAt` e `matchedAt`.
+
+Observacao matematica: esta calibracao e uma busca retrospectiva por parametros
+e seed que reproduzam um sorteio ja conhecido. Ela nao demonstra capacidade de
+prever concursos futuros; e um processo de ajuste/overfitting do simulador aos
+resultados historicos.
+
 ## Criterios atendidos
 
 - C++17 com CMake.
@@ -157,6 +223,8 @@ docker run --rm -p 8080:8080 mega-sena-num-generator
 - IDs sao embaralhados na inicializacao para reduzir vies de posicao inicial.
 - Saida em CSV para analise.
 - `result.txt` com ordem de extracao e dezenas ordenadas.
+- Agente C++ de calibracao historica para MongoDB, com checkpoints e retomada
+  por concurso.
 
 ## Nota para Monte Carlo
 

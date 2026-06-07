@@ -42,5 +42,5 @@ struct SimulationConfig {
 
     std::uint64_t seed{5489};
     std::string outputDir{"output"};
+    bool writeArtifacts{true};
 };
-

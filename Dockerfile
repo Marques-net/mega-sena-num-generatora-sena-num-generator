@@ -22,6 +22,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid nogroup mega
 
 COPY --from=build /src/build/mega_sena_num_generator /usr/local/bin/mega_sena_num_generator
+COPY --from=build /src/build/mega_sena_calibration_agent /usr/local/bin/mega_sena_calibration_agent
 
 USER 10001:65534
 EXPOSE 8080

@@ -15,11 +15,21 @@ add_executable(mega_sena_num_generator
     src/LotteryMachine.cpp
 )
 
+add_executable(mega_sena_calibration_agent
+    src/CalibrationAgent.cpp
+    src/DEMSolver.cpp
+    src/LotteryMachine.cpp
+)
+
 target_include_directories(mega_sena_num_generator PRIVATE src)
+target_include_directories(mega_sena_calibration_agent PRIVATE src)
 target_link_libraries(mega_sena_num_generator PRIVATE Threads::Threads)
+target_link_libraries(mega_sena_calibration_agent PRIVATE Threads::Threads)
 
 if (MSVC)
     target_compile_options(mega_sena_num_generator PRIVATE /W4)
+    target_compile_options(mega_sena_calibration_agent PRIVATE /W4)
 else()
     target_compile_options(mega_sena_num_generator PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(mega_sena_calibration_agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
