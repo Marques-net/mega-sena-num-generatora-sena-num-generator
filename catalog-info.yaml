@@ -1,0 +1,23 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: mega-sena-num-generator
+  title: Mega-Sena DEM Simulator
+  description: C++ DEM simulator for the Mega-Sena draw globe and GameHub HTTP API.
+  annotations:
+    github.com/project-slug: Marques-net/mega-sena-num-generatora-sena-num-generator
+    backstage.io/source-location: url:https://github.com/Marques-net/mega-sena-num-generatora-sena-num-generator
+    backstage.io/kubernetes-cluster: mk-local-cluster
+    backstage.io/kubernetes-label-selector: app.kubernetes.io/component=mega-sena-simulator
+    backstage.io/kubernetes-namespace: chess-dev
+  links:
+    - url: http://chess.local/mega-sena/
+      title: GameHub Mega-Sena page
+      icon: dashboard
+spec:
+  type: service
+  lifecycle: production
+  owner: guests
+  system: geek-hub
+  dependsOn:
+    - component:default/geek-hub-games-web

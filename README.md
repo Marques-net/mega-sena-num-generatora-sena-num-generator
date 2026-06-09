@@ -139,6 +139,18 @@ e uma amostra da trajetoria para visualizacao no front.
 
 ## Container
 
+Build no cluster MK:
+
+```bash
+../talos-cluster/local-cluster-mk/scripts/build-mega-sena-simulator-image.sh
+```
+
+Imagem publicada:
+
+```text
+ghcr.io/marques-net/mega-sena-num-generator:<tag>
+```
+
 ```bash
 docker build -t mega-sena-num-generator .
 docker run --rm -p 8080:8080 mega-sena-num-generator
