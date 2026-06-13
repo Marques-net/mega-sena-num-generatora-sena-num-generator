@@ -11,6 +11,7 @@ find_package(Threads REQUIRED)
 add_executable(mega_sena_num_generator
     src/main.cpp
     src/DEMSolver.cpp
+    src/GradientCalibrator.cpp
     src/HttpSimulationServer.cpp
     src/LotteryMachine.cpp
 )
@@ -18,6 +19,7 @@ add_executable(mega_sena_num_generator
 add_executable(mega_sena_calibration_agent
     src/CalibrationAgent.cpp
     src/DEMSolver.cpp
+    src/GradientCalibrator.cpp
     src/LotteryMachine.cpp
 )
 

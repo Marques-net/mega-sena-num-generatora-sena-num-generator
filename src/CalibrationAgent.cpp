@@ -21,6 +21,7 @@
 #include <unistd.h>
 #endif
 
+#include "GradientCalibrator.hpp"
 #include "LotteryMachine.hpp"
 #include "SimulationConfig.hpp"
 
@@ -57,7 +58,13 @@ struct Options {
     int latestLimit{10};
     unsigned long long maxAttemptsPerContest{0};
     unsigned long long checkpointEvery{100};
+    unsigned long long syncEvery{100};
     std::uint64_t baseSeed{5489};
+    int workerIndex{0};
+    int workerCount{1};
+    double gradientLearningRate{0.08};
+    double surrogateLearningRate{0.04};
+    double explorationScale{0.18};
 
     std::string mongoUri;
     std::string database{"geek_hub"};
@@ -91,7 +98,13 @@ void printUsage(const char* program) {
         << "  --output-dir <path>               Artifacts base dir for matched runs\n"
         << "  --max-attempts-per-contest <n>    Stop after n attempts; 0 means unlimited (default: 0)\n"
         << "  --checkpoint-every <n>            Persist progress every n attempts (default: 100)\n"
+        << "  --sync-every <n>                  Check if another worker matched every n local attempts (default: 100)\n"
         << "  --base-seed <n>                   Base seed for deterministic attempt generation\n"
+        << "  --worker-index <n>                Zero-based worker shard index (default: 0)\n"
+        << "  --worker-count <n>                Total worker shards for parallel calibration (default: 1)\n"
+        << "  --gradient-learning-rate <n>      Parameter learning rate for backprop gradient step (default: 0.08)\n"
+        << "  --surrogate-learning-rate <n>     Surrogate model backprop learning rate (default: 0.04)\n"
+        << "  --exploration-scale <n>           Parameter exploration amplitude around gradient state (default: 0.18)\n"
         << "  --match-order                     Match extraction order instead of sorted dozens\n"
         << "  --force                           Reprocess contests already marked as matched\n"
         << "  --dry-run                         Read and simulate without writing MongoDB documents\n"
@@ -196,6 +209,56 @@ std::string vectorToJson(const std::vector<int>& values) {
         out << values[i];
     }
     out << ']';
+    return out.str();
+}
+
+std::string doubleVectorToJson(const std::vector<double>& values) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(8);
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ',';
+        }
+        out << values[i];
+    }
+    out << ']';
+    return out.str();
+}
+
+std::string stringVectorToJson(const std::vector<std::string>& values) {
+    std::ostringstream out;
+    out << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ',';
+        }
+        out << jsonString(values[i]);
+    }
+    out << ']';
+    return out.str();
+}
+
+std::string gradientTelemetryToJson(const GradientCalibrationTelemetry& telemetry, const Options& options) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(8)
+        << "{"
+        << "\"algorithm\":\"online_surrogate_backpropagation\","
+        << "\"loss\":" << telemetry.loss << ','
+        << "\"surrogateLoss\":" << telemetry.surrogateLoss << ','
+        << "\"matchedNumbers\":" << telemetry.matchedNumbers << ','
+        << "\"complete\":" << (telemetry.complete ? "true" : "false") << ','
+        << "\"cycle\":" << jsonString(std::to_string(telemetry.cycle)) << ','
+        << "\"learningRate\":" << telemetry.learningRate << ','
+        << "\"surrogateLearningRate\":" << telemetry.surrogateLearningRate << ','
+        << "\"explorationScale\":" << telemetry.explorationScale << ','
+        << "\"workerIndex\":" << options.workerIndex << ','
+        << "\"workerCount\":" << options.workerCount << ','
+        << "\"errorVector\":" << doubleVectorToJson(telemetry.errorVector) << ','
+        << "\"gradient\":" << doubleVectorToJson(telemetry.gradient) << ','
+        << "\"parameterNames\":" << stringVectorToJson(telemetry.parameterNames) << ','
+        << "\"parameterValues\":" << doubleVectorToJson(telemetry.parameterValues)
+        << "}";
     return out.str();
 }
 
@@ -470,79 +533,21 @@ std::vector<Contest> parseContestsJson(const std::string& jsonPayload) {
     return contests;
 }
 
-std::uint64_t splitMix64(std::uint64_t value) {
-    value += 0x9e3779b97f4a7c15ULL;
-    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
-    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
-    return value ^ (value >> 31U);
-}
-
-template <typename T>
-const T& pickMixedRadix(std::uint64_t& index, const std::vector<T>& values) {
-    const T& value = values[static_cast<std::size_t>(index % values.size())];
-    index /= values.size();
-    return value;
-}
-
-std::vector<double> minMixProfiles(const Options& options) {
-    if (options.fixedMinMixTime) {
-        return {options.baseConfig.minMixTime};
+unsigned long long firstAttemptForWorker(
+    unsigned long long startAttempt,
+    int workerIndex,
+    int workerCount
+) {
+    if (workerCount <= 1) {
+        return startAttempt;
     }
-    const std::vector<double> candidates{1.5, 3.0, 6.0, 10.0};
-    std::vector<double> values;
-    for (double value : candidates) {
-        if (value < options.baseConfig.maxDuration - 0.25) {
-            values.push_back(value);
-        }
+    const unsigned long long desired = static_cast<unsigned long long>(workerIndex);
+    const unsigned long long count = static_cast<unsigned long long>(workerCount);
+    const unsigned long long current = (startAttempt - 1ULL) % count;
+    if (current <= desired) {
+        return startAttempt + (desired - current);
     }
-    if (values.empty()) {
-        values.push_back(std::max(0.1, options.baseConfig.maxDuration * 0.25));
-    }
-    return values;
-}
-
-std::vector<std::string> captureModeProfiles(const Options& options) {
-    if (options.fixedCaptureMode) {
-        return {options.baseConfig.captureMode};
-    }
-    return {"outlet", "top-side"};
-}
-
-SimulationConfig configForAttempt(const Options& options, int concurso, unsigned long long attempt) {
-    const std::vector<double> jets{0.85, 1.05, 1.25, 1.45, 1.75, 2.10};
-    const std::vector<double> turbulences{0.18, 0.28, 0.38, 0.55, 0.80};
-    const std::vector<double> restitutions{0.78, 0.85, 0.92};
-    const std::vector<double> frictions{0.12, 0.20, 0.32};
-    const std::vector<double> captureRadii{0.045, 0.055, 0.070};
-    const std::vector<double> captureSpeeds{2.50, 4.00, 6.00};
-    const std::vector<double> damping{1.8, 2.5, 3.2};
-    const std::vector<double> tangentialDamping{0.20, 0.35, 0.50};
-    const std::vector<double> minMixTimes = minMixProfiles(options);
-    const std::vector<std::string> captureModes = captureModeProfiles(options);
-
-    std::uint64_t profile = attempt - 1ULL;
-    SimulationConfig config = options.baseConfig;
-    config.upwardJetForce = pickMixedRadix(profile, jets);
-    config.turbulenceForce = pickMixedRadix(profile, turbulences);
-    config.restitution = pickMixedRadix(profile, restitutions);
-    config.friction = pickMixedRadix(profile, frictions);
-    config.captureRadius = pickMixedRadix(profile, captureRadii);
-    config.captureMaxSpeed = pickMixedRadix(profile, captureSpeeds);
-    config.normalDamping = pickMixedRadix(profile, damping);
-    config.tangentialDamping = pickMixedRadix(profile, tangentialDamping);
-    config.minMixTime = pickMixedRadix(profile, minMixTimes);
-    config.captureMode = pickMixedRadix(profile, captureModes);
-    config.captureRequiresDownwardVelocity = config.captureMode == "outlet";
-
-    const std::uint64_t seedMaterial =
-        options.baseSeed ^
-        (static_cast<std::uint64_t>(concurso) * 0xd6e8feb86659fd93ULL) ^
-        (attempt * 0xa0761d6478bd642fULL) ^
-        (profile * 0xe7037ed1a0b428dbULL);
-    config.seed = splitMix64(seedMaterial);
-    config.writeArtifacts = false;
-    config.outputDir = options.outputDir;
-    return config;
+    return startAttempt + (count - current + desired);
 }
 
 SimulationResult runSimulation(SimulationConfig config) {
@@ -634,7 +639,9 @@ std::string calibrationDocumentJson(
     unsigned long long attempts,
     const std::string& status,
     const std::string& artifactOutputDir,
-    const std::string& gitCommit
+    const std::string& gitCommit,
+    const GradientCalibrationTelemetry& telemetry,
+    const Options& options
 ) {
     const bool matched = status == "matched";
     std::ostringstream out;
@@ -650,7 +657,12 @@ std::string calibrationDocumentJson(
         << "\"targetOrder\":" << vectorToJson(contest.ordemSorteio) << ','
         << "\"attempts\":" << jsonString(std::to_string(attempts)) << ','
         << "\"attemptsString\":" << jsonString(std::to_string(attempts)) << ','
+        << "\"worker\":{"
+        << "\"index\":" << options.workerIndex << ','
+        << "\"count\":" << options.workerCount
+        << "},"
         << "\"parameters\":" << paramsToJson(config) << ','
+        << "\"gradientCalibration\":" << gradientTelemetryToJson(telemetry, options) << ','
         << "\"simulatorResult\":" << simulatorResultToJson(result) << ','
         << "\"artifactOutputDir\":" << jsonString(artifactOutputDir) << ','
         << "\"simulator\":{"
@@ -719,6 +731,8 @@ void ensureMongoIndexes(const Options& options) {
         "const col = dbh.getCollection(" + jsonString(options.calibrationCollection) + ");\n"
         "col.createIndex({ agentName: 1, concurso: 1 }, { unique: true, name: 'agent_concurso_unique' });\n"
         "col.createIndex({ status: 1, concurso: -1 }, { name: 'status_concurso' });\n"
+        "col.createIndex({ 'gradientCalibration.loss': 1, updatedAt: -1 }, { name: 'gradient_loss_updated' });\n"
+        "col.createIndex({ 'worker.index': 1, concurso: -1 }, { name: 'worker_concurso' });\n"
         "print(JSON.stringify({ ok: true }));\n";
     runMongoScript(options, script);
 }
@@ -808,8 +822,27 @@ Options parseArgs(int argc, char** argv) {
             if (options.checkpointEvery == 0) {
                 throw std::runtime_error("--checkpoint-every must be greater than zero");
             }
+        } else if (arg == "--sync-every") {
+            options.syncEvery = parseULL(requireValue(i, argc, argv), arg);
+            if (options.syncEvery == 0) {
+                throw std::runtime_error("--sync-every must be greater than zero");
+            }
         } else if (arg == "--base-seed") {
             options.baseSeed = static_cast<std::uint64_t>(parseULL(requireValue(i, argc, argv), arg));
+        } else if (arg == "--worker-index") {
+            const unsigned long long workerIndex = parseULL(requireValue(i, argc, argv), arg);
+            if (workerIndex > 1000000ULL) {
+                throw std::runtime_error("invalid worker index value for " + arg);
+            }
+            options.workerIndex = static_cast<int>(workerIndex);
+        } else if (arg == "--worker-count") {
+            options.workerCount = parsePositiveInt(requireValue(i, argc, argv), arg);
+        } else if (arg == "--gradient-learning-rate") {
+            options.gradientLearningRate = parseDouble(requireValue(i, argc, argv), arg);
+        } else if (arg == "--surrogate-learning-rate") {
+            options.surrogateLearningRate = parseDouble(requireValue(i, argc, argv), arg);
+        } else if (arg == "--exploration-scale") {
+            options.explorationScale = parseDouble(requireValue(i, argc, argv), arg);
         } else if (arg == "--match-order") {
             options.matchOrder = true;
         } else if (arg == "--force") {
@@ -842,6 +875,12 @@ Options parseArgs(int argc, char** argv) {
     if (options.baseConfig.timeStep <= 0.0 || options.baseConfig.maxDuration <= 0.0) {
         throw std::runtime_error("simulation time parameters must be positive");
     }
+    if (options.workerCount <= 0 || options.workerIndex < 0 || options.workerIndex >= options.workerCount) {
+        throw std::runtime_error("--worker-index must be between 0 and --worker-count - 1");
+    }
+    if (options.gradientLearningRate <= 0.0 || options.surrogateLearningRate <= 0.0 || options.explorationScale < 0.0) {
+        throw std::runtime_error("gradient parameters must be positive");
+    }
     if (options.fixedMinMixTime && options.baseConfig.minMixTime >= options.baseConfig.maxDuration) {
         throw std::runtime_error("--min-mix-time must be lower than --max-time");
     }
@@ -865,6 +904,13 @@ int runCalibration(const Options& options) {
     std::cout << "latest=" << options.latestLimit
               << " maxAttemptsPerContest=" << options.maxAttemptsPerContest
               << " dryRun=" << (options.dryRun ? "yes" : "no") << "\n";
+    std::cout << "workerIndex=" << options.workerIndex
+              << " workerCount=" << options.workerCount
+              << " checkpointEvery=" << options.checkpointEvery
+              << " syncEvery=" << options.syncEvery
+              << " gradientLearningRate=" << options.gradientLearningRate
+              << " surrogateLearningRate=" << options.surrogateLearningRate
+              << " explorationScale=" << options.explorationScale << "\n";
 
     ensureMongoIndexes(options);
     const std::vector<Contest> contests = loadLatestDraws(options);
@@ -874,6 +920,7 @@ int runCalibration(const Options& options) {
 
     const std::string gitCommit = currentGitCommit();
     int matchedContests = 0;
+    int externallyMatchedContests = 0;
     int skippedContests = 0;
 
     for (const Contest& contest : contests) {
@@ -885,16 +932,31 @@ int runCalibration(const Options& options) {
         }
 
         const unsigned long long startAttempt = stored.exists && stored.attempts > 0 ? stored.attempts + 1ULL : 1ULL;
+        const unsigned long long workerStartAttempt =
+            firstAttemptForWorker(startAttempt, options.workerIndex, options.workerCount);
         std::cout << "contest " << contest.concurso
                   << " target=" << vectorToJson(contest.dezenas)
-                  << " startAttempt=" << startAttempt << "\n";
+                  << " startAttempt=" << startAttempt
+                  << " workerStartAttempt=" << workerStartAttempt << "\n";
+
+        GradientCalibrator::Options gradientOptions;
+        gradientOptions.parameterLearningRate = options.gradientLearningRate;
+        gradientOptions.surrogateLearningRate = options.surrogateLearningRate;
+        gradientOptions.explorationScale = options.explorationScale;
+        gradientOptions.fixedMinMixTime = options.fixedMinMixTime;
+        gradientOptions.fixedCaptureMode = options.fixedCaptureMode;
+        gradientOptions.workerIndex = options.workerIndex;
+        gradientOptions.workerCount = options.workerCount;
+        GradientCalibrator calibrator(options.baseConfig, contest.dezenas, options.baseSeed, contest.concurso, gradientOptions);
 
         bool matched = false;
+        bool externalMatch = false;
         unsigned long long attemptsDoneForContest = 0;
-        for (unsigned long long attempt = startAttempt;; ++attempt) {
+        for (unsigned long long attempt = workerStartAttempt;; attempt += static_cast<unsigned long long>(options.workerCount)) {
             ++attemptsDoneForContest;
-            SimulationConfig config = configForAttempt(options, contest.concurso, attempt);
+            SimulationConfig config = calibrator.propose(attempt);
             SimulationResult result = runSimulation(config);
+            const GradientCalibrationTelemetry telemetry = calibrator.observe(result.sorted, result.complete);
             const bool isMatch = matchesContest(contest, result, options.matchOrder);
 
             if (isMatch) {
@@ -909,7 +971,9 @@ int runCalibration(const Options& options) {
                     attempt,
                     "matched",
                     artifactDir.string(),
-                    gitCommit
+                    gitCommit,
+                    telemetry,
+                    options
                 );
                 persistCalibrationDocument(options, doc);
                 ++matchedContests;
@@ -923,7 +987,11 @@ int runCalibration(const Options& options) {
 
             const bool hitAttemptLimit =
                 options.maxAttemptsPerContest > 0 && attemptsDoneForContest >= options.maxAttemptsPerContest;
-            if (attempt == startAttempt || attempt % options.checkpointEvery == 0 || hitAttemptLimit) {
+            const bool shouldCheckpoint =
+                attemptsDoneForContest == 1 ||
+                attemptsDoneForContest % options.checkpointEvery == 0 ||
+                hitAttemptLimit;
+            if (shouldCheckpoint) {
                 const std::string status = hitAttemptLimit ? "attempt_limit" : "running";
                 const std::string doc = calibrationDocumentJson(
                     contest,
@@ -932,26 +1000,43 @@ int runCalibration(const Options& options) {
                     attempt,
                     status,
                     "",
-                    gitCommit
+                    gitCommit,
+                    telemetry,
+                    options
                 );
                 persistCalibrationDocument(options, doc);
                 std::cout << "contest " << contest.concurso
                           << " checkpoint attempt=" << attempt
+                          << " worker=" << options.workerIndex << "/" << options.workerCount
                           << " status=" << status
                           << " result=" << vectorToJson(result.sorted)
+                          << " loss=" << std::fixed << std::setprecision(6) << telemetry.loss
+                          << " matchedNumbers=" << telemetry.matchedNumbers
                           << "\n";
+            }
+            if (options.workerCount > 1 && attemptsDoneForContest % options.syncEvery == 0) {
+                const StoredState current = readStoredState(options, contest.concurso);
+                if (current.matched) {
+                    externalMatch = true;
+                    ++externallyMatchedContests;
+                    std::cout << "contest " << contest.concurso
+                              << " matched by another worker after localAttempts="
+                              << attemptsDoneForContest << "\n";
+                    break;
+                }
             }
             if (hitAttemptLimit) {
                 break;
             }
         }
 
-        if (!matched && options.maxAttemptsPerContest == 0) {
+        if (!matched && !externalMatch && options.maxAttemptsPerContest == 0) {
             throw std::runtime_error("internal error: unlimited loop exited without match");
         }
     }
 
     std::cout << "calibration pass finished: matched=" << matchedContests
+              << " externalMatched=" << externallyMatchedContests
               << " skipped=" << skippedContests
               << " processed=" << contests.size() << "\n";
     return 0;

@@ -21,3 +21,23 @@ spec:
   system: geek-hub
   dependsOn:
     - component:default/geek-hub-games-web
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: mega-sena-calibration-agent
+  title: Mega-Sena Calibration Agent
+  description: Indexed Kubernetes job that calibrates the Mega-Sena DEM simulator with online backpropagation and gradient search.
+  annotations:
+    github.com/project-slug: Marques-net/mega-sena-num-generatora-sena-num-generator
+    backstage.io/source-location: url:https://github.com/Marques-net/mega-sena-num-generatora-sena-num-generator
+    backstage.io/kubernetes-cluster: mk-local-cluster
+    backstage.io/kubernetes-label-selector: app.kubernetes.io/name=mega-sena-calibration
+    backstage.io/kubernetes-namespace: mongodb
+spec:
+  type: job
+  lifecycle: production
+  owner: guests
+  system: geek-hub
+  dependsOn:
+    - component:default/mega-sena-num-generator

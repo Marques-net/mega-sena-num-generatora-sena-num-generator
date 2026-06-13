@@ -161,7 +161,20 @@ docker run --rm -p 8080:8080 mega-sena-num-generator
 O binario `mega_sena_calibration_agent` executa uma busca retrospectiva de
 parametros do DEM contra resultados historicos da Mega-Sena armazenados em
 MongoDB. Ele usa os componentes do simulador (`LotteryMachine`, `DEMSolver`,
-`SimulationConfig`) e varia, por tentativa:
+`SimulationConfig`) e calibra os parametros em ciclos ate encontrar uma
+correspondencia.
+
+A calibracao atual usa um mecanismo online de backpropagation sobre um modelo
+substituto pequeno. A cada tentativa, o agente observa a saida do simulador,
+treina esse modelo substituto com backpropagation e calcula o gradiente do erro
+contra as dezenas alvo. Esse gradiente ajusta os parametros fisicos da proxima
+tentativa, mantendo uma componente de exploracao por seed para evitar ficar preso
+em um unico ponto do espaco de busca.
+
+A imagem do projeto tambem empacota o agente e o `mongosh`, necessario para ler
+os resultados historicos e persistir checkpoints no MongoDB.
+
+Parametros ajustados pelo ciclo:
 
 - seed `uint64`;
 - intensidade do jato de ar;
@@ -191,6 +204,24 @@ mega_sena_calibration_agent \
   --output-dir calibration-output
 ```
 
+Execucao paralela por shards:
+
+```bash
+mega_sena_calibration_agent \
+  --latest 10 \
+  --database geek_hub \
+  --history-collection mega_sena_resultados \
+  --calibration-collection mega_sena_simulacoes \
+  --worker-index 0 \
+  --worker-count 4 \
+  --checkpoint-every 100 \
+  --sync-every 100
+```
+
+Em Kubernetes, use um Job `Indexed` e passe `JOB_COMPLETION_INDEX` como
+`--worker-index`. Cada pod processa apenas as tentativas do seu shard e consulta
+periodicamente o MongoDB para parar quando outro worker encontrar o match.
+
 O agente nao define limite de tentativas por padrao. Ele continua em cada
 concurso ate encontrar uma simulacao cujas 6 dezenas ordenadas sejam iguais ao
 resultado historico. Para validar sem entrar em busca longa:
@@ -212,6 +243,9 @@ Campos principais gravados no MongoDB:
 - `concurso`, `dataSorteio`, `targetNumbers` e `targetOrder`;
 - `attempts` e `attemptsString`;
 - `parameters`, incluindo `seed`/`seedString` como string exata `uint64`;
+- `worker`, com indice e total de shards;
+- `gradientCalibration`, com algoritmo, loss, vetor de erro, gradiente,
+  learning rates, exploracao e parametros calibrados;
 - `simulatorResult` com ordem extraida, dezenas ordenadas, completude e tempo
   final;
 - `artifactOutputDir` para CSV/result.txt quando houver match;
